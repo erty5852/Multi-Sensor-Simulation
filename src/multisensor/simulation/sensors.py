@@ -64,3 +64,61 @@ class SensorModel(ABC):
         """Generate a sensor measurement from a ground-truth state."""
 
         raise NotImplementedError
+
+
+class LidarSensor(SensorModel):
+    """Synthetic object-level LiDAR position sensor."""
+
+    def __init__(
+        self,
+        noise_std_x: float = 0.10,
+        noise_std_y: float = 0.10,
+        update_rate_hz: float = 10.0,
+        detection_probability: float = 0.95,
+        seed: int | None = None,
+    ) -> None:
+        if noise_std_x < 0:
+            raise ValueError("noise_std_x must not be negative")
+
+        if noise_std_y < 0:
+            raise ValueError("noise_std_y must not be negative")
+
+        super().__init__(
+            name="lidar",
+            update_rate_hz=update_rate_hz,
+            detection_probability=detection_probability,
+            seed=seed,
+        )
+
+        self.noise_std_x = noise_std_x
+        self.noise_std_y = noise_std_y
+
+    def measure(self, state: GroundTruthState) -> Measurement:
+        """Generate a noisy Cartesian position measurement."""
+
+        if not self._detection_succeeds():
+            return Measurement(
+                timestamp=state.timestamp,
+                sensor_name=self.name,
+                measurement_type="cartesian_position",
+                values=(),
+                is_valid=False,
+            )
+
+        measured_x = state.x + self._random_generator.gauss(
+            0.0,
+            self.noise_std_x,
+        )
+
+        measured_y = state.y + self._random_generator.gauss(
+            0.0,
+            self.noise_std_y,
+        )
+
+        return Measurement(
+            timestamp=state.timestamp,
+            sensor_name=self.name,
+            measurement_type="cartesian_position",
+            values=(measured_x, measured_y),
+            is_valid=True,
+        )
