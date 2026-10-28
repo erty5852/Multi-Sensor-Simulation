@@ -1,6 +1,13 @@
+from math import atan2
+
 import pytest
 
-from multisensor.simulation.sensors import LidarSensor, SensorModel
+from multisensor.simulation.sensors import (
+    LidarSensor,
+    RadarSensor,
+    CameraSensor,
+    SensorModel,
+)
 from multisensor.types import GroundTruthState, Measurement
 
 
@@ -259,3 +266,296 @@ def test_lidar_rejects_negative_noise_standard_deviation():
 
     with pytest.raises(ValueError):
         LidarSensor(noise_std_y=-0.10)
+
+
+def test_radar_uses_expected_default_configuration():
+    radar = RadarSensor(seed=42)
+
+    assert radar.name == "radar"
+    assert radar.update_rate_hz == pytest.approx(20.0)
+    assert radar.detection_probability == pytest.approx(0.90)
+    assert radar.range_noise_std == pytest.approx(0.30)
+    assert radar.bearing_noise_std == pytest.approx(0.01)
+
+
+def test_radar_updates_at_twenty_hertz():
+    radar = RadarSensor(seed=42)
+
+    assert radar.is_update_time(0.00) is True
+    assert radar.is_update_time(0.025) is False
+    assert radar.is_update_time(0.05) is True
+    assert radar.is_update_time(0.10) is True
+
+
+def test_radar_with_zero_noise_converts_cartesian_to_polar():
+    radar = RadarSensor(
+        range_noise_std=0.0,
+        bearing_noise_std=0.0,
+        detection_probability=1.0,
+        seed=42,
+    )
+
+    state = GroundTruthState(
+        timestamp=0.0,
+        x=3.0,
+        y=4.0,
+        vx=0.0,
+        vy=0.0,
+    )
+
+    measurement = radar.measure(state)
+
+    measured_range, measured_bearing = measurement.values
+
+    assert measurement.timestamp == pytest.approx(0.0)
+    assert measurement.sensor_name == "radar"
+    assert measurement.measurement_type == "polar_position"
+    assert measurement.is_valid is True
+    assert measurement.confidence is None
+
+    assert measured_range == pytest.approx(5.0)
+    assert measured_bearing == pytest.approx(atan2(4.0, 3.0))
+
+
+def test_radar_adds_range_and_bearing_noise():
+    radar = RadarSensor(
+        range_noise_std=0.30,
+        bearing_noise_std=0.01,
+        detection_probability=1.0,
+        seed=42,
+    )
+
+    state = GroundTruthState(
+        timestamp=0.0,
+        x=3.0,
+        y=4.0,
+        vx=0.0,
+        vy=0.0,
+    )
+
+    measurement = radar.measure(state)
+
+    true_values = (
+        5.0,
+        atan2(4.0, 3.0),
+    )
+
+    assert measurement.is_valid is True
+    assert len(measurement.values) == 2
+    assert measurement.values != true_values
+
+
+def test_radar_returns_invalid_measurement_after_missed_detection():
+    radar = RadarSensor(
+        detection_probability=0.0,
+        seed=42,
+    )
+
+    state = create_ground_truth_state()
+    measurement = radar.measure(state)
+
+    assert measurement.timestamp == pytest.approx(state.timestamp)
+    assert measurement.sensor_name == "radar"
+    assert measurement.measurement_type == "polar_position"
+    assert measurement.values == ()
+    assert measurement.is_valid is False
+
+
+def test_radar_measurements_are_reproducible_with_same_seed():
+    first_radar = RadarSensor(
+        detection_probability=1.0,
+        seed=42,
+    )
+
+    second_radar = RadarSensor(
+        detection_probability=1.0,
+        seed=42,
+    )
+
+    state = create_ground_truth_state()
+
+    first_measurements = [
+        first_radar.measure(state).values
+        for _ in range(5)
+    ]
+
+    second_measurements = [
+        second_radar.measure(state).values
+        for _ in range(5)
+    ]
+
+    assert first_measurements == second_measurements
+
+
+def test_radar_rejects_negative_noise_standard_deviation():
+    with pytest.raises(ValueError):
+        RadarSensor(range_noise_std=-0.30)
+
+    with pytest.raises(ValueError):
+        RadarSensor(bearing_noise_std=-0.01)
+
+
+def test_camera_default_configuration():
+    sensor = CameraSensor()
+
+    assert sensor.name == "camera"
+    assert sensor.update_rate_hz == 10.0
+    assert sensor.detection_probability == 0.85
+    assert sensor.bearing_noise_std == 0.02
+    assert sensor.estimated_range_noise_std == 1.50
+    assert sensor.confidence_min == 0.60
+    assert sensor.confidence_max == 0.95
+    assert sensor.sampling_interval == pytest.approx(0.1)
+
+
+def test_camera_update_times():
+    sensor = CameraSensor()
+
+    assert sensor.is_update_time(0.0)
+    assert sensor.is_update_time(0.1)
+    assert sensor.is_update_time(0.2)
+
+    assert not sensor.is_update_time(0.05)
+    assert not sensor.is_update_time(0.15)
+
+
+def test_camera_zero_noise_measurement():
+    sensor = CameraSensor(
+        bearing_noise_std=0.0,
+        estimated_range_noise_std=0.0,
+        confidence_min=0.80,
+        confidence_max=0.80,
+        detection_probability=1.0,
+        seed=42,
+    )
+
+    state = GroundTruthState(
+        timestamp=0.1,
+        x=3.0,
+        y=4.0,
+        vx=0.0,
+        vy=0.0,
+    )
+
+    measurement = sensor.measure(state)
+
+    assert measurement.timestamp == state.timestamp
+    assert measurement.sensor_name == "camera"
+    assert measurement.measurement_type == "bearing_and_range"
+    assert measurement.is_valid is True
+
+    assert measurement.values == pytest.approx(
+        (atan2(4.0, 3.0), 5.0)
+    )
+    assert measurement.confidence == pytest.approx(0.80)
+
+
+def test_camera_missed_detection():
+    sensor = CameraSensor(
+        detection_probability=0.0,
+        seed=42,
+    )
+
+    state = GroundTruthState(
+        timestamp=0.1,
+        x=3.0,
+        y=4.0,
+        vx=0.0,
+        vy=0.0,
+    )
+
+    measurement = sensor.measure(state)
+
+    assert measurement.timestamp == state.timestamp
+    assert measurement.sensor_name == "camera"
+    assert measurement.measurement_type == "bearing_and_range"
+    assert measurement.is_valid is False
+    assert measurement.values == ()
+    assert measurement.confidence is None
+
+
+def test_camera_confidence_within_configured_bounds():
+    sensor = CameraSensor(
+        confidence_min=0.65,
+        confidence_max=0.90,
+        detection_probability=1.0,
+        seed=42,
+    )
+
+    state = GroundTruthState(
+        timestamp=0.1,
+        x=3.0,
+        y=4.0,
+        vx=0.0,
+        vy=0.0,
+    )
+
+    for _ in range(100):
+        measurement = sensor.measure(state)
+
+        assert measurement.confidence is not None
+        assert 0.65 <= measurement.confidence <= 0.90
+
+
+def test_camera_estimated_range_is_non_negative():
+    sensor = CameraSensor(
+        estimated_range_noise_std=10.0,
+        detection_probability=1.0,
+        seed=42,
+    )
+
+    state = GroundTruthState(
+        timestamp=0.0,
+        x=0.0,
+        y=0.0,
+        vx=0.0,
+        vy=0.0,
+    )
+
+    for _ in range(100):
+        measurement = sensor.measure(state)
+
+        estimated_range = measurement.values[1]
+
+        assert estimated_range >= 0.0
+
+
+def test_camera_same_seed_produces_same_measurements():
+    sensor_a = CameraSensor(seed=42)
+    sensor_b = CameraSensor(seed=42)
+
+    state = GroundTruthState(
+        timestamp=0.1,
+        x=30.0,
+        y=5.0,
+        vx=2.0,
+        vy=0.0,
+    )
+
+    measurements_a = [
+        sensor_a.measure(state)
+        for _ in range(20)
+    ]
+
+    measurements_b = [
+        sensor_b.measure(state)
+        for _ in range(20)
+    ]
+
+    assert measurements_a == measurements_b
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"bearing_noise_std": -0.01},
+        {"estimated_range_noise_std": -1.0},
+        {"confidence_min": -0.1},
+        {"confidence_max": 1.1},
+        {"confidence_min": 0.9, "confidence_max": 0.6},
+    ],
+)
+def test_camera_rejects_invalid_parameters(kwargs):
+    with pytest.raises(ValueError):
+        CameraSensor(**kwargs)
+
